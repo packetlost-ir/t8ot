@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "t8ot"
+version = "0.1.0"
+description = "A modern, ergonomic micro-framework built on top of pyTelegramBotAPI (telebot)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pyTelegramBotAPI>=4.20.0",
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "ruff"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
