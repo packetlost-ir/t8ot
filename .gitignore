@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.idea/
+.vscode/
+*.swp
+*.py[cod]
+*.session
+*.session-journal
