@@ -1,170 +1,137 @@
 # t8ot
 
-A modern, ergonomic micro-framework built on top of **pyTelegramBotAPI (`telebot`)** designed for building clean, scalable, and modular Telegram bots with file-based routing and built-in FSM.
+![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Framework](https://img.shields.io/badge/built%20on-pyTelegramBotAPI-blue.svg)
+![Docs](https://img.shields.io/badge/docs-in%20docs%2F-informational.svg)
+
+**A modern, ergonomic micro-framework for Telegram bots** — built on top of
+[pyTelegramBotAPI](https://github.com/eternnoir/pyTelegramBotAPI) (`telebot`) with file-based
+routing, a unified context, conversational FSM flows, pluggable storage, middlewares, access
+guards and a project scaffolder.
+
+No router tables. No decorators to learn before your first handler. Write a class, drop the file
+in a folder, and the framework registers it.
 
 ---
 
 ## Key Features
 
-- **File-Based Routing:** Drop handler files into folders (`commands/`, `callbacks/`, `flows/`) and let `t8ot` auto-discover and register them dynamically.
-- **Unified Context (`ctx`):** Single, cohesive interface wrapping incoming updates with built-in shortcuts (`ctx.reply`, `ctx.edit`, `ctx.answer`, `ctx.value`).
-- **Conversational Flows (FSM):** Multi-step interactive flows with input validation, step-by-step state management, and cancellation support.
-- **Fluent Keyboard Builders:** Chainable API for constructing multi-row `InlineKeyboardMarkup` and `ReplyKeyboardMarkup` with layout auto-balancing (`.adjust()`).
-- **Asynchronous Architecture:** Native async/await support powered by `AsyncTeleBot`.
+| | |
+|---|---|
+| 🗂 **File-Based Routing** | Drop handler files into `commands/`, `callbacks/`, `flows/` — discovery is recursive, so `commands/admin/ban.py` is found automatically. Private files (`_x.py`) and `__init__.py` are skipped, and a broken file warns instead of killing the loader. |
+| 🧩 **Unified Context (`ctx`)** | `Message`, `CallbackQuery` and `InlineQuery` normalized into one interface: `ctx.user`, `ctx.chat`, `ctx.text`, `ctx.value`, plus `reply`, `edit_text`, `delete`, `reply_photo`, `reply_document`, `reply_video`. |
+| 🔁 **Conversational FSM** | Multi-step flows declared as data (`Step` objects) with validation, cancel keywords and per-step storage. |
+| 💾 **Pluggable Storage** | `MemoryStorage` (default), `SQLiteStorage` (stdlib, persistent), `RedisStorage` (distributed, optional extra). One line to swap. |
+| 🎹 **Fluent Keyboards** | Chainable `InlineKeyboard` / `ReplyKeyboard` builders with `adjust(n)` auto-balancing. |
+| 🧱 **Middleware** | `pre_process` / `post_process` hooks around every handler, with `ctx.extra` as a per-update scratchpad and the ability to halt requests. |
+| 🔐 **Guards** | `@admin_only([...])`, `@private_only()`, `@group_only()` decorators for access control. |
+| 🛠 **CLI** | `t8ot init my_bot` plus `make:command` / `make:callback` / `make:flow` generators. |
+| ⚡ **Async Native** | Built on `AsyncTeleBot`; every handler is a plain `async def execute(self, ctx)`. |
 
 ---
 
-## Architecture Overview
-
-A typical `t8ot` project follows a clean separation of concerns:
-
-```text
-my_bot/
-├── main.py                  # Bot entry point & loader configuration
-├── commands/                # Slash commands (/start, /help, etc.)
-│   └── start.py
-├── callbacks/               # Inline keyboard query handlers
-│   └── menu_actions.py
-└── flows/                   # Multi-step conversational wizards (FSM)
-    └── register.py
-
-```
-
----
-
-## Installation
-
-Install in editable mode during development:
-
-```bash
-git clone https://github.com/packetlost-ir/t8ot.git
-cd t8ot
-pip install -e .
-
-```
-
-Or install dependencies directly:
-
-```bash
-pip install -r requirements.txt 
-# or
-pip install pyTelegramBotAPI aiohttp
-
-```
-
----
-
-## Quick Start
-
-### 1. Define a Command (`commands/start.py`)
+## Quick Example
 
 ```python
+from t8ot import Context, InlineKeyboard
 from t8ot.base import BaseCommand
-from t8ot import Context
+
 
 class StartCommand(BaseCommand):
     name = "start"
 
     async def execute(self, ctx: Context) -> None:
-        user_name = ctx.user.first_name if ctx.user else "there"
-        await ctx.reply(f"Hello, <b>{user_name}</b>! Welcome to t8ot.")
-
+        keyboard = (
+            InlineKeyboard()
+            .button("Website", url="https://example.com")
+            .button("Settings", callback_data="settings:open")
+            .build()
+        )
+        await ctx.reply(f"Hello {ctx.user.first_name}!", reply_markup=keyboard)
 ```
 
-### 2. Define a Multi-Step Flow (`flows/register.py`)
-
 ```python
-import re
-from t8ot.fsm import BaseFlow, Step
-from t8ot import Context
-
-def validate_phone(ctx: Context) -> bool:
-    return bool(re.match(r"^09\d{9}$", ctx.text or ""))
-
-class RegistrationFlow(BaseFlow):
-    name = "register"
-    cancel_commands = ["/cancel", "cancel", "exit"]
-
-    def define_steps(self):
-        return [
-            Step(
-                name="name",
-                prompt="Please enter your full name:",
-                validator=lambda ctx: len(ctx.text or "") >= 3,
-                error_message="Name must be at least 3 characters. Try again:",
-            ),
-            Step(
-                name="phone",
-                prompt="Please enter your mobile phone number:",
-                validator=validate_phone,
-                error_message="Invalid phone number. Try again (or /cancel):",
-            ),
-        ]
-
-    async def on_finish(self, ctx: Context, data: dict):
-        await ctx.reply(f"Registration complete!\nName: {data['name']}\nPhone: {data['phone']}")
-
-    async def on_cancel(self, ctx: Context):
-        await ctx.reply("Registration cancelled.")
-
-```
-
-### 3. Build Keyboards Fluently
-
-```python
-from t8ot import InlineKeyboard, ReplyKeyboard
-
-# Inline Keyboard with auto-grid (2 columns)
-inline_kb = (
-    InlineKeyboard()
-    .button("Profile", callback_data="action:profile")
-    .button("Settings", callback_data="action:settings")
-    .button("Support", callback_data="action:support")
-    .button("Website", url="[https://github.com](https://github.com)")
-    .adjust(2)
-    .build()
-)
-
-# Reply Keyboard requesting metadata
-reply_kb = (
-    ReplyKeyboard(placeholder="Select an option...")
-    .button("Share Contact", request_contact=True)
-    .button("Share Location", request_location=True)
-    .row()
-    .button("Cancel")
-    .build()
-)
-
-```
-
-### 4. Run the Application (`main.py`)
-
-```python
+# main.py
 import os
 from t8ot import Bot
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-
-bot = Bot(token=BOT_TOKEN)
-
-# Auto-discover handlers across project directories
+bot = Bot(token=os.getenv("BOT_TOKEN", "123456:YOUR_TOKEN_HERE"))
 bot.load_handlers("commands")
 bot.load_handlers("callbacks")
 bot.load_handlers("flows")
 
 if __name__ == "__main__":
     bot.run()
+```
 
+```text
+commands/start.py  ->  /start
+callbacks/         ->  inline button handlers
+flows/             ->  multi-step conversations
 ```
 
 ---
 
-## Modules & Extensibility
+## Project Layout
 
-* **`t8ot.base`**: Abstract base classes (`BaseCommand`, `BaseCallback`, `BaseMessage`, `BaseInline`) enforcing standard handler contracts.
-* **`t8ot.fsm`**: State persistence (`MemoryStorage`) and sequential conversational pipelines (`BaseFlow`, `Step`).
-* **`t8ot.types`**: Declarative keyboard utilities (`InlineKeyboard`, `ReplyKeyboard`, `remove_keyboard`).
-* **`t8ot.context`**: Normalizes `Message`, `CallbackQuery`, and `InlineQuery` payloads into a predictable interface.
+```text
+my_bot/
+├── main.py                  # Bot instance + load_handlers() calls
+├── commands/                # Slash commands (nested folders welcome)
+│   └── start.py
+├── callbacks/               # Inline keyboard query handlers
+│   └── menu_actions.py
+└── flows/                   # Multi-step conversational wizards (FSM)
+    └── register.py
+```
+
+---
+
+## Installation
+
+```bash
+pip install t8ot            # from PyPI
+pip install "t8ot[redis]"   # + RedisStorage support
+
+# or from source
+git clone https://github.com/packetlost-ir/t8ot.git
+cd t8ot && pip install -e .
+```
+
+Scaffold a project and run it:
+
+```bash
+t8ot init my_bot
+cd my_bot && python main.py
+```
+
+---
+
+## 📚 Documentation
+
+| Guide | What it covers |
+|---|---|
+| [Overview & Architecture](docs/index.md) | Philosophy, the five moving parts, design rules |
+| [Quickstart](docs/quickstart.md) | Requirements, installation, `t8ot init`, first run |
+| [Routing & Handler Discovery](docs/routing.md) | File conventions, nested trees, `BaseCommand` / `BaseCallback` / `BaseMessage` / `BaseInline` |
+| [Context API & Responses](docs/context.md) | Event data, messaging & media helpers, keyboard builders |
+| [FSM & Storage](docs/fsm-and-storage.md) | `BaseFlow`, `Step`, validation, memory / SQLite / Redis backends |
+| [Middleware Pipeline](docs/middleware.md) | Pre/post hooks, halting, `ctx.extra` |
+| [Guards](docs/guards.md) | `@admin_only`, `@private_only`, `@group_only` |
+| [CLI](docs/cli.md) | `t8ot init` and the `make:*` generators |
+
+---
+
+## Modules
+
+- **`t8ot.base`** — handler contracts: `BaseCommand`, `BaseCallback`, `BaseMessage`, `BaseInline`
+- **`t8ot.fsm`** — `BaseFlow`, `Step` and the storage backends
+- **`t8ot.middleware`** — `BaseMiddleware` pipeline hooks
+- **`t8ot.guards`** — `admin_only`, `private_only`, `group_only`
+- **`t8ot.types`** — `InlineKeyboard`, `ReplyKeyboard`, `remove_keyboard`
+- **`t8ot.context`** — the `Context` object handed to every handler
+- **`t8ot.cli`** — the `t8ot` console script
 
 ---
 
@@ -180,4 +147,4 @@ if __name__ == "__main__":
 
 ## License
 
-This project is licensed under the [MIT License](https://www.google.com/search?q=LICENSE).
+Released under the [MIT License](LICENSE).
