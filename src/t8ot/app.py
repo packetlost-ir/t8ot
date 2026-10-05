@@ -3,6 +3,7 @@ import inspect
 import importlib.util
 from pathlib import Path
 from typing import Optional, Type, Dict, List, Callable, Awaitable
+from types import ModuleType
 import asyncio
 
 from telebot.async_telebot import AsyncTeleBot
@@ -72,27 +73,46 @@ class Bot:
         if exception is not None:
             raise exception
 
-    def _import_module_from_file(self, file_path: Path):
-        module_name = f"t8ot_dynamic_{file_path.stem}_{abs(hash(str(file_path)))}"
+    def _import_module_from_file(self, file_path: Path, root: Path) -> Optional[ModuleType]:
+        """Import a handler file under a name derived from its relative path.
+
+        The relative path keeps same-named files in sibling folders
+        (``admin/stats.py`` vs ``user/stats.py``) from clashing in
+        ``sys.modules``. Returns ``None`` when the file cannot be imported.
+        """
+        rel = file_path.relative_to(root).as_posix()
+        dotted = rel[:-3].replace("/", ".")
+        module_name = f"t8ot_dynamic_{dotted}_{abs(hash(str(file_path.resolve())))}"
+
         spec = importlib.util.spec_from_file_location(module_name, file_path)
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
+        if not spec or not spec.loader:
+            print(f"[t8ot] Warning: Cannot load '{rel}'.")
+            return None
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
             spec.loader.exec_module(module)
-            return module
-        return None
+        except Exception as e:
+            del sys.modules[module_name]  # Never cache a half-imported module
+            print(f"[t8ot] Warning: Failed to import '{rel}': {e!r}")
+            return None
+        return module
 
     def load_handlers(self, directory: str):
-        path = Path(directory)
-        if not path.exists():
-            print(f"[t8ot] Warning: Directory '{directory}' does not exist.")
+        """Recursively discover and register handler classes under ``directory``."""
+        root = Path(directory)
+        if not root.is_dir():
+            print(f"[t8ot] Warning: '{directory}' is not a directory.")
             return
 
-        for py_file in path.glob("*.py"):
-            if py_file.name.startswith("__"):
+        for py_file in sorted(root.rglob("*.py")):
+            rel = py_file.relative_to(root)
+            # Skip private/hidden modules: __init__.py, _helpers.py, .cache/x.py
+            if any(part.startswith(("_", ".")) for part in rel.parts):
                 continue
 
-            module = self._import_module_from_file(py_file)
+            module = self._import_module_from_file(py_file, root)
             if not module:
                 continue
 
