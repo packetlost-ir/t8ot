@@ -22,5 +22,8 @@ dev = [
     "ruff"
 ]
 
+[project.scripts]
+t8ot = "t8ot.cli.main:cli"
+
 [tool.setuptools.packages.find]
 where = ["src"]
