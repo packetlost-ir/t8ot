@@ -2,7 +2,7 @@ import sys
 import inspect
 import importlib.util
 from pathlib import Path
-from typing import Optional, Type, Dict
+from typing import Optional, Type, Dict, List, Callable, Awaitable
 import asyncio
 
 from telebot.async_telebot import AsyncTeleBot
@@ -11,6 +11,7 @@ from telebot.types import Message, CallbackQuery, InlineQuery
 from .context import Context
 from .base import BaseCommand, BaseCallback, BaseMessage, BaseInline
 from .fsm import MemoryStorage, BaseFlow
+from .middleware import BaseMiddleware
 
 
 class Bot:
@@ -18,12 +19,53 @@ class Bot:
         self.bot = AsyncTeleBot(token=token, parse_mode=parse_mode)
         self.storage = MemoryStorage()
         self.flows: Dict[str, BaseFlow] = {}
+        self.middlewares: List[BaseMiddleware] = []
 
         # Global message interceptor for active multi-step flows
-        @self.bot.message_handler(func=lambda msg: self.storage.get_state(msg.from_user.id) is not None, content_types=['text', 'contact', 'location'])
+        @self.bot.message_handler(
+            func=lambda msg: self.storage.get_state(msg.from_user.id) is not None,
+            content_types=['text', 'contact', 'location']
+        )
         async def flow_interceptor(message: Message):
             ctx = Context(self, message)
-            await self._handle_flow_step(ctx)
+            await self._execute_with_middlewares(ctx, self._handle_flow_step)
+
+    def use(self, middleware: BaseMiddleware) -> None:
+        """Registers a global middleware into the execution pipeline."""
+        self.middlewares.append(middleware)
+
+    async def _execute_with_middlewares(
+        self,
+        ctx: Context,
+        handler: Callable[[Context], Awaitable[None]]
+    ) -> None:
+        """Executes pre-hooks, the target handler, and post-hooks."""
+        executed_middlewares: List[BaseMiddleware] = []
+        halted = False
+        exception: Optional[Exception] = None
+
+        try:
+            # 1. Run pre_process hooks sequentially
+            for mw in self.middlewares:
+                allowed = await mw.pre_process(ctx)
+                executed_middlewares.append(mw)
+                if not allowed:
+                    halted = True  # Request halted by middleware
+                    break
+
+            # 2. Execute target handler
+            if not halted:
+                await handler(ctx)
+
+        except Exception as e:
+            exception = e
+
+        # 3. Unwind post_process hooks in reverse order (success, halt or error)
+        for mw in reversed(executed_middlewares):
+            await mw.post_process(ctx, exception=exception)
+
+        if exception is not None:
+            raise exception
 
     def _import_module_from_file(self, file_path: Path):
         module_name = f"t8ot_dynamic_{file_path.stem}_{abs(hash(str(file_path)))}"
@@ -81,19 +123,21 @@ class Bot:
         @self.bot.message_handler(commands=[cmd_name])
         async def handler(message: Message):
             ctx = Context(self, message)
-            await instance.execute(ctx)
+            await self._execute_with_middlewares(ctx, instance.execute)
 
         print(f"[t8ot] Registered command: /{cmd_name}")
 
     def _register_callback(self, cls: Type[BaseCallback]):
         instance = cls()
         pattern = instance.pattern
-        filter_fn = (lambda call: (call.data == pattern or (call.data and call.data.startswith(pattern)))) if pattern else (lambda call: True)
+        filter_fn = (
+            lambda call: (call.data == pattern or (call.data and call.data.startswith(pattern)))
+        ) if pattern else (lambda call: True)
 
         @self.bot.callback_query_handler(func=filter_fn)
         async def handler(call: CallbackQuery):
             ctx = Context(self, call)
-            await instance.execute(ctx)
+            await self._execute_with_middlewares(ctx, instance.execute)
 
         print(f"[t8ot] Registered callback: {cls.__name__} (pattern={pattern})")
 
@@ -107,16 +151,17 @@ class Bot:
             if self.storage.get_state(message.from_user.id) is not None:
                 return
             ctx = Context(self, message)
-            await instance.execute(ctx)
+            await self._execute_with_middlewares(ctx, instance.execute)
 
         print(f"[t8ot] Registered message handler: {cls.__name__}")
 
     def _register_inline(self, cls: Type[BaseInline]):
         instance = cls()
+
         @self.bot.inline_handler(func=lambda query: True)
         async def handler(inline_query: InlineQuery):
             ctx = Context(self, inline_query)
-            await instance.execute(ctx)
+            await self._execute_with_middlewares(ctx, instance.execute)
 
         print(f"[t8ot] Registered inline handler: {cls.__name__}")
 

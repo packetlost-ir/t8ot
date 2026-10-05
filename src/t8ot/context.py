@@ -12,6 +12,8 @@ class Context:
         self.app = bot
         self.bot = bot.bot  # AsyncTeleBot client instance
         self.raw_event = event
+        # Free-form scratchpad shared between middlewares and the handler.
+        self.extra: Dict[str, Any] = {}
 
         if isinstance(event, CallbackQuery):
             self.message: Optional[Message] = event.message
