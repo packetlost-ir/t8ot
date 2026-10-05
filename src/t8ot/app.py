@@ -10,14 +10,19 @@ from telebot.types import Message, CallbackQuery, InlineQuery
 
 from .context import Context
 from .base import BaseCommand, BaseCallback, BaseMessage, BaseInline
-from .fsm import MemoryStorage, BaseFlow
+from .fsm import BaseStorage, MemoryStorage, BaseFlow
 from .middleware import BaseMiddleware
 
 
 class Bot:
-    def __init__(self, token: str, parse_mode: Optional[str] = "HTML"):
+    def __init__(
+        self,
+        token: str,
+        parse_mode: Optional[str] = "HTML",
+        storage: Optional[BaseStorage] = None,
+    ):
         self.bot = AsyncTeleBot(token=token, parse_mode=parse_mode)
-        self.storage = MemoryStorage()
+        self.storage: BaseStorage = storage or MemoryStorage()
         self.flows: Dict[str, BaseFlow] = {}
         self.middlewares: List[BaseMiddleware] = []
 
