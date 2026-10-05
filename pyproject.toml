@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "t8ot"
-version = "0.2.0"
+version = "0.3.0"
 description = "A modern, ergonomic micro-framework built on top of pyTelegramBotAPI (telebot)"
 readme = "README.md"
 requires-python = ">=3.10"
