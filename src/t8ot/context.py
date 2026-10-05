@@ -1,5 +1,10 @@
 from typing import Optional, Union, Any, Dict, TYPE_CHECKING
-from telebot.types import Message, CallbackQuery, InlineQuery, User
+from telebot.types import Chat, Message, CallbackQuery, InlineQuery, User
+
+try:  # The exception class was renamed across pyTelegramBotAPI releases.
+    from telebot.asyncio_helper import ApiException as TelegramAPIError
+except ImportError:  # pyTelegramBotAPI < 4.2x
+    from telebot.asyncio_helper import APIError as TelegramAPIError
 
 if TYPE_CHECKING:
     from .app import Bot
@@ -53,9 +58,49 @@ class Context:
             return self.message.location
         return self.message.text
 
+    @property
+    def chat(self) -> Optional[Chat]:
+        """The chat the event belongs to, or None for inline queries."""
+        return self.message.chat if self.message else None
+
     async def reply(self, text: str, **kwargs) -> Message:
         """Sends a response message to the current chat."""
         return await self.bot.send_message(self.chat_id, text, **kwargs)
+
+    async def reply_photo(
+        self, photo: Any, caption: Optional[str] = None, **kwargs
+    ) -> Message:
+        """Sends a photo (file_id, URL or file object) to the current chat."""
+        return await self.bot.send_photo(self.chat_id, photo, caption=caption, **kwargs)
+
+    async def reply_document(
+        self, document: Any, caption: Optional[str] = None, **kwargs
+    ) -> Message:
+        """Sends a document/file to the current chat."""
+        return await self.bot.send_document(
+            self.chat_id, document, caption=caption, **kwargs
+        )
+
+    async def reply_video(
+        self, video: Any, caption: Optional[str] = None, **kwargs
+    ) -> Message:
+        """Sends a video (file_id, URL or file object) to the current chat."""
+        return await self.bot.send_video(self.chat_id, video, caption=caption, **kwargs)
+
+    async def delete(self) -> bool:
+        """Deletes the current message.
+
+        Returns False when there is nothing to delete or Telegram refuses
+        (e.g. messages older than 48 hours are rejected).
+        """
+        if not self.message:
+            return False
+        try:
+            return bool(
+                await self.bot.delete_message(self.chat_id, self.message.message_id)
+            )
+        except TelegramAPIError:
+            return False
 
     async def answer(self, text: Optional[str] = None, show_alert: bool = False):
         """Acknowledges a callback query notification."""
@@ -76,6 +121,17 @@ class Context:
                 **kwargs,
             )
         raise RuntimeError("Edit only works in callback queries or on editable messages.")
+
+    async def edit_text(self, text: str, **kwargs):
+        """Edits the current message, whatever the event type is."""
+        if not self.message:
+            raise RuntimeError("Nothing to edit: this event carries no message.")
+        return await self.bot.edit_message_text(
+            text=text,
+            chat_id=self.chat_id,
+            message_id=self.message.message_id,
+            **kwargs,
+        )
 
     @property
     def state_data(self) -> Dict[str, Any]:
