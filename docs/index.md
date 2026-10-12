@@ -13,7 +13,7 @@ a unified context, conversational FSM flows, pluggable storage, middlewares and 
 | **Philosophy** | Asynchronous first, file-based routing, small surface, zero ceremony |
 | **Runtime** | Python 3.10+, `asyncio`, `AsyncTeleBot` |
 | **Dependencies** | `pyTelegramBotAPI`, `aiohttp` (plus `redis` only if you use `RedisStorage`) |
-| **Entry point** | `Bot.run()` — long polling out of the box |
+| **Entry point** | `Bot.run()` — long polling; `Bot.run_webhook()` — native aiohttp webhooks |
 
 t8ot is deliberately small. There is no router table to maintain, no dependency-injection
 container, and no decorator stack you have to learn before your first handler. You write a
@@ -52,7 +52,8 @@ class, drop the file in a folder, and the framework registers it.
 
 1. **Core Engine — `Bot`**
    Wraps `AsyncTeleBot`, owns the middleware list, the registry of flows, the active storage
-   backend, and the recursive handler loader.
+   backend, and the recursive handler loader. It can run over long polling (`run()`) or a native
+   aiohttp webhook server (`run_webhook()`) — the handler pipeline is identical either way.
 
 2. **Context — `ctx`**
    One object handed to every handler. It normalizes `Message`, `CallbackQuery` and
@@ -85,6 +86,7 @@ class, drop the file in a folder, and the framework registers it.
 | [Middleware Pipeline](middleware.md) | Pre/post hooks, `ctx.extra` as a per-update scratchpad, halting |
 | [Guards](guards.md) | `@admin_only`, `@private_only`, `@group_only` access control |
 | [CLI](cli.md) | `t8ot init` and the `make:*` handler generators |
+| [Webhooks](webhook.md) | Native aiohttp webhook server, secret-token security, deployment recipes |
 
 ---
 

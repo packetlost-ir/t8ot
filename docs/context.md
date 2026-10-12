@@ -24,6 +24,7 @@ class StartCommand(BaseCommand):
 | `ctx.message` | `Optional[Message]` | Underlying message, `None` for inline queries |
 | `ctx.text` | `Optional[str]` | Message text, `None` when absent |
 | `ctx.value` | `Any` | Primary payload: text, `contact.phone_number`, or `location` |
+| `ctx.args` | `List[str]` | Command arguments split from `ctx.text` (the command token is dropped) |
 | `ctx.data` | `Optional[str]` | Raw `callback_data` on callback queries |
 | `ctx.query` | `str` | Inline query text (`ctx.is_inline` only) |
 | `ctx.extra` | `Dict[str, Any]` | Per-update scratchpad shared by middlewares and the handler |
@@ -53,6 +54,41 @@ async def execute(self, ctx: Context) -> None:
 ```
 
 See [Middleware](middleware.md).
+
+---
+
+## Command arguments
+
+### `ctx.args -> List[str]`
+
+Parses the message text into positional arguments: the leading command token (or any first word)
+is dropped, the rest is split on whitespace. It returns an **empty list** when there is no text or
+no arguments — never `None`, so you can iterate and index safely.
+
+```python
+# user sends: /ban 12345 spam
+async def execute(self, ctx: Context) -> None:
+    if not ctx.args:
+        await ctx.reply("Usage: /ban <user_id> [reason]")
+        return
+
+    user_id = ctx.args[0]                          # "12345"
+    reason = " ".join(ctx.args[1:]) or "no reason"  # "spam"
+    await ctx.reply(f"Banned {user_id}: {reason}")
+```
+
+Behavior:
+
+| Input text | `ctx.args` |
+|---|---|
+| `/echo hello world` | `["hello", "world"]` |
+| `/start` | `[]` |
+| `/add   a   b` | `["a", "b"]` (collapses extra spaces) |
+| `""` or whitespace | `[]` |
+| a contact / photo message | `[]` (`ctx.text` is `None`) |
+
+`ctx.args` is a convenience over `ctx.text`; use `ctx.text` when you need the raw string or
+`ctx.value` when you want the normalized payload (phone number, location, …).
 
 ---
 

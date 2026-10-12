@@ -109,7 +109,30 @@ class SettingsToggleCallback(BaseCallback):
 
 | Attribute | Type | Default | Purpose |
 |---|---|---|---|
-| `pattern` | `Optional[str]` | `None` | Fires when `data == pattern` **or** `data.startswith(pattern)`; `None` matches every callback |
+| `pattern` | `Optional[str]` | `None` | Routing key for `callback_data`. See the matching contract below; `None` matches every callback |
+
+#### Pattern matching contract
+
+The value of `pattern` decides how a handler routes a `callback_data` string:
+
+| `pattern` | Match rule | Example |
+|---|---|---|
+| `None` | Matches **every** callback | catch-all |
+| `"user"` | **Exact** match only | fires for `"user"`, not `"user_settings"` |
+| `"settings:"` | **Prefix** match (trailing `:`) | fires for `"settings:open"`, `"settings:theme"` |
+| `"user:*"` | **Prefix** match (trailing `*`, stripped before comparing) | fires for `"user:42"`, `"user:42:edit"` |
+
+Use a bare string for a single, unambiguous button and a `:`- or `*`-suffixed string to namespace a
+family of buttons. This keeps `"user"` from silently swallowing callbacks meant for
+`"user_settings"`.
+
+```python
+class UserCallback(BaseCallback):
+    pattern = "user"              # exact: only callback_data == "user"
+
+class UserAdminCallback(BaseCallback):
+    pattern = "user:"             # prefix: "user:ban", "user:promote", ...
+```
 
 ### `BaseMessage` — plain messages
 

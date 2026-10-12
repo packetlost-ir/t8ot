@@ -28,6 +28,7 @@ in a folder, and the framework registers it.
 | 🔐 **Guards** | `@admin_only([...])`, `@private_only()`, `@group_only()` decorators for access control. |
 | 🛠 **CLI** | `t8ot init my_bot` plus `make:command` / `make:callback` / `make:flow` generators. |
 | ⚡ **Async Native** | Built on `AsyncTeleBot`; every handler is a plain `async def execute(self, ctx)`. |
+| 🔌 **Native Webhooks** | `bot.run_webhook(...)` serves a built-in `aiohttp` endpoint with constant-time secret-token verification — no extra dependencies. See [docs/webhook.md](docs/webhook.md). |
 
 ---
 
@@ -69,6 +70,21 @@ if __name__ == "__main__":
 commands/start.py  ->  /start
 callbacks/         ->  inline button handlers
 flows/             ->  multi-step conversations
+```
+
+Swap `bot.run()` for a built-in webhook server in production (same handlers, no extra deps):
+
+```python
+import asyncio
+
+if __name__ == "__main__":
+    asyncio.run(
+        bot.run_webhook(
+            "https://bot.example.com/webhook",   # public HTTPS URL
+            path="/webhook",
+            secret_token=os.getenv("WEBHOOK_SECRET"),
+        )
+    )
 ```
 
 ---
@@ -120,6 +136,7 @@ cd my_bot && python main.py
 | [Middleware Pipeline](docs/middleware.md) | Pre/post hooks, halting, `ctx.extra` |
 | [Guards](docs/guards.md) | `@admin_only`, `@private_only`, `@group_only` |
 | [CLI](docs/cli.md) | `t8ot init` and the `make:*` generators |
+| [Webhooks & Deployment](docs/webhook.md) | `run_webhook`, secret-token security, reverse-proxy & cloud recipes |
 
 ---
 
