@@ -1,5 +1,7 @@
 import sys
 import re
+import hmac
+import logging
 import inspect
 import importlib.util
 from pathlib import Path
@@ -7,13 +9,19 @@ from typing import Optional, Type, Dict, List, Callable, Awaitable
 from types import ModuleType
 import asyncio
 
+from aiohttp import web
 from telebot.async_telebot import AsyncTeleBot
-from telebot.types import Message, CallbackQuery, InlineQuery
+from telebot.types import Message, CallbackQuery, InlineQuery, Update
 
 from .context import Context
 from .base import BaseCommand, BaseCallback, BaseMessage, BaseInline
 from .fsm import BaseStorage, MemoryStorage, BaseFlow
 from .middleware import BaseMiddleware
+
+
+logger = logging.getLogger("t8ot")
+
+SECRET_TOKEN_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 
 
 def _default_flow_name(cls: type) -> str:
@@ -54,6 +62,7 @@ class Bot:
         storage: Optional[BaseStorage] = None,
     ):
         self.bot = AsyncTeleBot(token=token, parse_mode=parse_mode)
+        self.token = token
         self.storage: BaseStorage = storage or MemoryStorage()
         self.flows: Dict[str, BaseFlow] = {}
         self.middlewares: List[BaseMiddleware] = []
@@ -287,3 +296,91 @@ class Bot:
     def run(self):
         print("[t8ot] Bot is polling...")
         asyncio.run(self.bot.infinity_polling())
+
+    def _build_webhook_app(
+        self,
+        webhook_url: str,
+        path: str,
+        secret_token: Optional[str],
+        drop_pending_updates: bool,
+    ) -> web.Application:
+        """Builds the aiohttp application serving one webhook endpoint.
+
+        Kept separate from :meth:`run_webhook` so tests can drive the
+        application through ``aiohttp.test_utils`` without binding a socket.
+        """
+
+        async def handle(request: web.Request) -> web.Response:
+            if secret_token is not None:
+                provided = request.headers.get(SECRET_TOKEN_HEADER)
+                if provided is None or not hmac.compare_digest(provided, secret_token):
+                    return web.Response(status=403, text="Forbidden")
+            try:
+                data = await request.json()
+            except (ValueError, web.HTTPBadRequest):
+                return web.Response(status=400, text="Bad Request")
+
+            try:
+                update = Update.de_json(data)
+            except (KeyError, TypeError, AttributeError, ValueError):
+                update = None
+            if update is None:
+                return web.Response(status=400, text="Bad Request")
+
+            # A handler failure must not bubble up: Telegram would otherwise
+            # retry the same update forever. Acknowledge it regardless.
+            try:
+                await self.bot.process_new_updates([update])
+            except Exception:  # keep the server alive
+                logger.exception("Error while processing update")
+            return web.Response(text="OK")
+
+        async def on_startup(app: web.Application) -> None:
+            await self.bot.set_webhook(
+                url=webhook_url,
+                secret_token=secret_token,
+                drop_pending_updates=drop_pending_updates,
+            )
+            logger.info("Webhook registered at %s", webhook_url)
+
+        async def on_cleanup(app: web.Application) -> None:
+            await self.bot.delete_webhook()
+            await self.bot.close_session()
+            logger.info("Webhook server stopped")
+
+        app = web.Application()
+        app.router.add_post(path, handle)
+        app.on_startup.append(on_startup)
+        app.on_cleanup.append(on_cleanup)
+        return app
+
+    async def run_webhook(
+        self,
+        webhook_url: str,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        path: Optional[str] = None,
+        secret_token: Optional[str] = None,
+        drop_pending_updates: bool = False,
+    ) -> None:
+        """Serves the bot over an aiohttp webhook endpoint.
+
+        Registers ``webhook_url`` with Telegram on startup, dispatches
+        incoming updates to the same handler pipeline as polling, and
+        removes the webhook on shutdown. Runs until cancelled.
+        """
+        if not path:
+            path = f"/{self.token}"
+        elif not path.startswith("/"):
+            path = f"/{path}"
+
+        app = self._build_webhook_app(webhook_url, path, secret_token, drop_pending_updates)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host=host, port=port)
+        await site.start()
+        logger.info("Webhook server listening on %s:%s%s", host, port, path)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await runner.cleanup()
