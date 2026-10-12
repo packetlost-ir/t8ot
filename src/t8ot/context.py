@@ -1,4 +1,4 @@
-from typing import Optional, Union, Any, Dict, TYPE_CHECKING
+from typing import Optional, Union, Any, Dict, List, TYPE_CHECKING
 from telebot.types import Chat, Message, CallbackQuery, InlineQuery, User
 
 try:  # The exception class was renamed across pyTelegramBotAPI releases.
@@ -57,6 +57,12 @@ class Context:
         if self.message.location:
             return self.message.location
         return self.message.text
+
+    @property
+    def args(self) -> List[str]:
+        """Returns command arguments as a list of strings, or empty list."""
+        parts = self.text.strip().split() if self.text else []
+        return parts[1:] if len(parts) > 1 else []
 
     @property
     def chat(self) -> Optional[Chat]:

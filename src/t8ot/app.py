@@ -1,4 +1,5 @@
 import sys
+import re
 import inspect
 import importlib.util
 from pathlib import Path
@@ -13,6 +14,36 @@ from .context import Context
 from .base import BaseCommand, BaseCallback, BaseMessage, BaseInline
 from .fsm import BaseStorage, MemoryStorage, BaseFlow
 from .middleware import BaseMiddleware
+
+
+def _default_flow_name(cls: type) -> str:
+    """Derives a fallback flow name from a class name.
+
+    Only a trailing ``flow`` suffix is stripped (case-insensitive), so
+    ``FlowchartFlow`` becomes ``flowchart`` rather than ``chart``. Falls
+    back to the lower-cased class name when stripping leaves it empty.
+    """
+    stripped = re.sub(r"(?i)flow$", "", cls.__name__)
+    return stripped.lower() or cls.__name__.lower()
+
+
+def _build_callback_filter(
+    pattern: Optional[str],
+) -> Callable[[CallbackQuery], bool]:
+    """Builds a callback-data predicate from a routing pattern.
+
+    ``None`` matches everything. A trailing ``:`` or ``*`` opts into prefix
+    matching (the ``*`` is stripped before the comparison); any other value
+    requires an exact match, so ``"user"`` never swallows ``"user_settings"``.
+    """
+    if pattern is None:
+        return lambda call: True
+    if pattern.endswith(":"):
+        return lambda call: bool(call.data) and call.data.startswith(pattern)
+    if pattern.endswith("*"):
+        base = pattern[:-1]
+        return lambda call: bool(call.data) and call.data.startswith(base)
+    return lambda call: call.data == pattern
 
 
 class Bot:
@@ -137,7 +168,7 @@ class Bot:
 
     def _register_flow(self, cls: Type[BaseFlow]):
         instance = cls()
-        flow_name = instance.name or cls.__name__.lower().replace("flow", "")
+        flow_name = instance.name or _default_flow_name(cls)
         self.flows[flow_name] = instance
         print(f"[t8ot] Registered flow: {flow_name}")
 
@@ -155,9 +186,7 @@ class Bot:
     def _register_callback(self, cls: Type[BaseCallback]):
         instance = cls()
         pattern = instance.pattern
-        filter_fn = (
-            lambda call: (call.data == pattern or (call.data and call.data.startswith(pattern)))
-        ) if pattern else (lambda call: True)
+        filter_fn = _build_callback_filter(pattern)
 
         @self.bot.callback_query_handler(func=filter_fn)
         async def handler(call: CallbackQuery):
