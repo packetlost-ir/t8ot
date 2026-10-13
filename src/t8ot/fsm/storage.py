@@ -1,8 +1,8 @@
 import json
 import sqlite3
+import threading
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Optional
 
 
 def _decode(raw: Optional[str]) -> Dict[str, Any]:
@@ -78,64 +78,76 @@ class MemoryStorage(BaseStorage):
 class SQLiteStorage(BaseStorage):
     """Durable storage backed by a local SQLite file (stdlib only).
 
-    A connection is opened per operation, which keeps the storage safe to use
-    from the bot's single-threaded event loop without sharing connections.
+    A single connection is kept open for the lifetime of the storage and
+    guarded by a re-entrant lock, so the same instance is safe to share
+    between the bot's event loop and worker threads. WAL mode lets readers
+    proceed while a write is in flight, and ``synchronous=NORMAL`` trades a
+    negligible durability window for markedly faster writes.
     """
 
     def __init__(self, db_path: str = "bot_storage.db"):
         self.db_path = db_path
-        with self._connect() as conn:
-            conn.execute(
+        self._lock = threading.RLock()
+        self._conn: Optional[sqlite3.Connection] = sqlite3.connect(
+            db_path, check_same_thread=False
+        )
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS fsm_storage ("
                 "user_id INTEGER PRIMARY KEY, state TEXT, data TEXT)"
             )
+            self._conn.commit()
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        """Yield a connection that commits on success and always closes."""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    def close(self) -> None:
+        """Closes the persistent connection. Safe to call more than once."""
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def get_state(self, user_id: int) -> Optional[str]:
-        with self._connect() as conn:
-            row = conn.execute(
+        with self._lock:
+            row = self._conn.execute(
                 "SELECT state FROM fsm_storage WHERE user_id = ?", (user_id,)
             ).fetchone()
         return row[0] if row else None
 
     def set_state(self, user_id: int, state: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
+        with self._lock:
+            self._conn.execute(
                 "INSERT INTO fsm_storage (user_id, state) VALUES (?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET state = excluded.state",
                 (user_id, state),
             )
+            self._conn.commit()
 
     def get_data(self, user_id: int) -> Dict[str, Any]:
-        with self._connect() as conn:
-            row = conn.execute(
+        with self._lock:
+            row = self._conn.execute(
                 "SELECT data FROM fsm_storage WHERE user_id = ?", (user_id,)
             ).fetchone()
         return _decode(row[0] if row else None)
 
     def update_data(self, user_id: int, **kwargs) -> None:
-        data = self.get_data(user_id)
-        data.update(kwargs)
-        payload = json.dumps(data)
-        with self._connect() as conn:
-            conn.execute(
+        # Hold the lock across read-modify-write so concurrent updates merge
+        # instead of clobbering each other. RLock lets the nested get_data()
+        # re-enter safely.
+        with self._lock:
+            data = self.get_data(user_id)
+            data.update(kwargs)
+            self._conn.execute(
                 "INSERT INTO fsm_storage (user_id, data) VALUES (?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET data = excluded.data",
-                (user_id, payload),
+                (user_id, json.dumps(data)),
             )
+            self._conn.commit()
 
     def clear(self, user_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM fsm_storage WHERE user_id = ?", (user_id,))
+        with self._lock:
+            self._conn.execute("DELETE FROM fsm_storage WHERE user_id = ?", (user_id,))
+            self._conn.commit()
 
 
 class RedisStorage(BaseStorage):

@@ -66,6 +66,9 @@ class Bot:
         self.storage: BaseStorage = storage or MemoryStorage()
         self.flows: Dict[str, BaseFlow] = {}
         self.middlewares: List[BaseMiddleware] = []
+        self.error_handler: Optional[
+            Callable[[Exception, Context], Awaitable[None]]
+        ] = None
 
         # Global message interceptor for active multi-step flows
         @self.bot.message_handler(
@@ -74,11 +77,42 @@ class Bot:
         )
         async def flow_interceptor(message: Message):
             ctx = Context(self, message)
-            await self._execute_with_middlewares(ctx, self._handle_flow_step)
+            await self._dispatch(ctx, self._handle_flow_step)
 
     def use(self, middleware: BaseMiddleware) -> None:
         """Registers a global middleware into the execution pipeline."""
         self.middlewares.append(middleware)
+
+    def on_error(
+        self, handler_fn: Callable[[Exception, Context], Awaitable[None]]
+    ) -> Callable[[Exception, Context], Awaitable[None]]:
+        """Registers a global handler for unhandled exceptions.
+
+        Works as a decorator or as a plain call; returns the function so
+        ``@bot.on_error`` is valid. The handler receives the exception and the
+        ``ctx`` of the update being processed.
+        """
+        self.error_handler = handler_fn
+        return handler_fn
+
+    async def _dispatch(
+        self, ctx: Context, handler: Callable[[Context], Awaitable[None]]
+    ) -> None:
+        """Runs the middleware pipeline, absorbing any unhandled exception.
+
+        Logs the error and, when an ``on_error`` handler is registered,
+        forwards it the exception and ``ctx``. Never re-raises, so polling and
+        webhook loops survive handler failures.
+        """
+        try:
+            await self._execute_with_middlewares(ctx, handler)
+        except Exception as exc:
+            logger.exception("Unhandled exception while processing update")
+            if self.error_handler is not None:
+                try:
+                    await self.error_handler(exc, ctx)
+                except Exception:
+                    logger.exception("The registered on_error handler raised")
 
     async def _execute_with_middlewares(
         self,
@@ -188,7 +222,7 @@ class Bot:
         @self.bot.message_handler(commands=[cmd_name])
         async def handler(message: Message):
             ctx = Context(self, message)
-            await self._execute_with_middlewares(ctx, instance.execute)
+            await self._dispatch(ctx, instance.execute)
 
         print(f"[t8ot] Registered command: /{cmd_name}")
 
@@ -200,7 +234,7 @@ class Bot:
         @self.bot.callback_query_handler(func=filter_fn)
         async def handler(call: CallbackQuery):
             ctx = Context(self, call)
-            await self._execute_with_middlewares(ctx, instance.execute)
+            await self._dispatch(ctx, instance.execute)
 
         print(f"[t8ot] Registered callback: {cls.__name__} (pattern={pattern})")
 
@@ -214,7 +248,7 @@ class Bot:
             if self.storage.get_state(message.from_user.id) is not None:
                 return
             ctx = Context(self, message)
-            await self._execute_with_middlewares(ctx, instance.execute)
+            await self._dispatch(ctx, instance.execute)
 
         print(f"[t8ot] Registered message handler: {cls.__name__}")
 
@@ -224,7 +258,7 @@ class Bot:
         @self.bot.inline_handler(func=lambda query: True)
         async def handler(inline_query: InlineQuery):
             ctx = Context(self, inline_query)
-            await self._execute_with_middlewares(ctx, instance.execute)
+            await self._dispatch(ctx, instance.execute)
 
         print(f"[t8ot] Registered inline handler: {cls.__name__}")
 
@@ -293,9 +327,18 @@ class Bot:
             self.storage.clear(ctx.user.id)
             await flow.on_finish(ctx, data)
 
+    def _close_storage(self) -> None:
+        """Closes the storage backend when it exposes a ``close()`` method."""
+        close = getattr(self.storage, "close", None)
+        if callable(close):
+            close()
+
     def run(self):
         print("[t8ot] Bot is polling...")
-        asyncio.run(self.bot.infinity_polling())
+        try:
+            asyncio.run(self.bot.infinity_polling())
+        finally:
+            self._close_storage()
 
     def _build_webhook_app(
         self,
@@ -346,6 +389,7 @@ class Bot:
         async def on_cleanup(app: web.Application) -> None:
             await self.bot.delete_webhook()
             await self.bot.close_session()
+            self._close_storage()
             logger.info("Webhook server stopped")
 
         app = web.Application()
